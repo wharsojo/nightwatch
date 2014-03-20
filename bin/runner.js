@@ -186,7 +186,7 @@ try {
 
     var test_settings = parseTestSettings(argv);
 
-    // setting the source of the test(s)
+    // setting the path where the tests are located
     var testsource;
     if (typeof argv.t == 'string') {
       testsource =  (argv.t.indexOf(process.cwd()) === -1) ?
@@ -215,6 +215,7 @@ try {
 
         runner.run(testsource, test_settings, {
           output_folder : output_folder,
+          src_folders : settings.src_folders,
           selenium : (settings.selenium || null)
         }, function(err) {
           if (err) {
