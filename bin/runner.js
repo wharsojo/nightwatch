@@ -77,6 +77,9 @@ cli.command('version')
   .alias('v')
   .description('Shows version information.');
 
+cli.command('reuse-session')
+  .description('Re-uses the selenium session between tests.');
+
 try {
   var argv = cli.init();
   if (argv.help) {

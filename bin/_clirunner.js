@@ -13,6 +13,9 @@ function CliRunner(argv) {
   this.output_folder = '';
   this.parallelMode = false;
   this.cli = require('./_cli.js');
+  this.availColors = [
+    ['red', 'light_gray'], ['green', 'black'], ['blue', 'light_gray'], ['magenta', 'light_gray']
+  ];
 }
 
 CliRunner.prototype = {
@@ -53,6 +56,9 @@ CliRunner.prototype = {
     // reading the settings file
     try {
       this.settings = require(this.argv.c);
+      if (this.argv['reuse-session']) {
+        this.settings.reuse_session = true;
+      }
       this.replaceEnvVariables();
       this.manageSelenium = !this.isParallelMode() && this.settings.selenium &&
         this.settings.selenium.start_process || false;
@@ -127,7 +133,7 @@ CliRunner.prototype = {
   setOutputFolder : function() {
     var isDisabled = this.settings.output_folder === false;
     var isDefault = this.cli.command('output').isDefault(this.argv.o);
-    
+
     this.output_folder = isDisabled ? false : (isDefault && this.settings.output_folder || this.argv.o);
     return this;
   },
@@ -142,12 +148,20 @@ CliRunner.prototype = {
         err.message = 'There was an error while running the test.';
       }
 
-      if (this.test_settings.output) {
+      if (this.isOutputEnabled()) {
         console.error(Logger.colors.red(err.message));
       }
 
       process.exit(1);
     }
+  },
+
+  isOutputEnabled : function() {
+    if (!this.test_settings) {
+      return true;
+    }
+
+    return this.test_settings.output !== false;
   },
 
   /**
@@ -156,7 +170,7 @@ CliRunner.prototype = {
    */
   getTestSource : function() {
     var testsource;
-    if (typeof this.argv.t == 'string') {
+    if (typeof this.argv.t === 'string') {
       testsource =  (this.argv.t.indexOf(process.cwd()) === -1) ?
         path.join(process.cwd(), this.argv.t) :
         this.argv.t;
@@ -214,7 +228,7 @@ CliRunner.prototype = {
 
     Selenium.startServer(this.settings, function(error, child, error_out, exitcode) {
       if (error) {
-        if (self.test_settings.output) {
+        if (self.isOutputEnabled()) {
           Logger.error('There was an error while starting the Selenium server:');
         }
         self.globalErrorHandler({
@@ -255,7 +269,8 @@ CliRunner.prototype = {
       Runner.run(source, self.test_settings, {
         output_folder : self.output_folder,
         src_folders : self.settings.src_folders,
-        live_output : self.settings.live_output
+        live_output : self.settings.live_output,
+        reuse_session : self.settings.reuse_session
       }, function(err) {
         self
           .stopSelenium()
@@ -435,96 +450,105 @@ CliRunner.prototype = {
    * @param {function} finishCallback
    */
   startChildProcesses : function(envs, finishCallback) {
-    var execFile = require('child_process').execFile, child, self = this;
+    var self = this;
     var mainModule = process.mainModule.filename;
+
+    this.prevIndex = 0;
+    this.combinedOutput = {};
+
     finishCallback = finishCallback || function() {};
 
-    var availColors = [
-      ['red', 'light_gray'], ['green', 'black'], ['blue', 'light_gray'], ['magenta', 'light_gray']
-    ];
-    var currentIndex = availColors.length, temporaryValue, randomIndex;
+    this.shuffleChildProcessColors();
 
+    envs.forEach(function(item, index) {
+      var cliArgs = self.getChildProcessArgs(mainModule);
+      cliArgs.push('-e', item, '__parallel-mode');
+
+      setTimeout(function() {
+        self.runChildProcess(item, index, envs, cliArgs, finishCallback);
+      }, index * 10);
+    });
+  },
+
+  shuffleChildProcessColors : function() {
+    var currentIndex = this.availColors.length, temporaryValue, randomIndex;
     // While there remain elements to shuffle...
     while (0 !== currentIndex) {
       randomIndex = Math.floor(Math.random() * currentIndex);
       currentIndex -= 1;
 
       // And swap it with the current element.
-      temporaryValue = availColors[currentIndex];
-      availColors[currentIndex] = availColors[randomIndex];
-      availColors[randomIndex] = temporaryValue;
+      temporaryValue = this.availColors[currentIndex];
+      this.availColors[currentIndex] = this.availColors[randomIndex];
+      this.availColors[randomIndex] = temporaryValue;
+    }
+  },
+
+  writeToStdout : function(data, item, index) {
+    data = data.replace(/^\s+|\s+$/g, '');
+    this.combinedOutput[item] = this.combinedOutput[item] || [];
+
+    var env_output = '';
+    var color_pair = this.availColors[index%4];
+    if (this.prevIndex !== index) {
+      this.prevIndex = index;
+      if (this.settings.live_output) {
+        env_output += '\n';
+      }
     }
 
-    var prevIndex = 0;
-    var output = {};
-    var writeToSdtout = function(data, item, index) {
-      data = data.replace(/^\s+|\s+$/g, '');
-      output[item] = output[item] || [];
+    env_output += Logger.colors[color_pair[1]](' ' + item + ' ',
+      Logger.colors.background[color_pair[0]]);
 
-      var env_output = '';
-      var color_pair = availColors[index%4];
-      if (prevIndex !== index) {
-        prevIndex = index;
-        if (self.settings.live_output) {
-          env_output += '\n';
+    if (this.settings.live_output) {
+      env_output += ' ' + data;
+    } else {
+      env_output += '\t' + data + '\n';
+    }
+
+    if (this.settings.live_output) {
+      console.log(env_output);
+    } else {
+      this.combinedOutput[item].push(env_output);
+    }
+  },
+
+  runChildProcess : function(item, index, envs, cliArgs, finishCallback) {
+    var self = this;
+    var env = process.env;
+    var execFile = require('child_process').execFile;
+    var child = execFile(process.execPath, cliArgs, {
+      cwd : process.cwd(),
+      encoding: 'utf8',
+      env : env
+    }, function (error, stdout, stderr) {});
+
+    env.__NIGHTWATCH_PARALLEL_MODE = 1;
+    env.__NIGHTWATCH_ENV = item;
+
+    console.log('Started child process for env:',
+      Logger.colors.yellow(' ' + item + ' ', Logger.colors.background.black), '\n');
+
+    child.stdout.on('data', function (data) {
+      self.writeToStdout(data, item, index);
+    });
+
+    child.stderr.on('data', function (data) {
+      self.writeToStdout(data, item, index);
+    });
+
+    child.on('close', function (code) {
+      if (!self.settings.live_output) {
+        var child_output = self.combinedOutput[item];
+        for (var i = 0; i < child_output.length; i++) {
+          process.stdout.write(child_output[i]);
         }
+        console.log('');
       }
 
-      env_output += Logger.colors[color_pair[1]](' ' + item + ' ',
-        Logger.colors.background[color_pair[0]]);
-
-      if (self.settings.live_output) {
-        env_output += ' ' + data;
-      } else {
-        env_output += '\t' + data + '\n';
+      if (index === (envs.length - 1)) {
+        finishCallback(self.combinedOutput);
       }
-
-      if (self.settings.live_output) {
-        console.log(env_output);
-      } else {
-        output[item].push(env_output);
-      }
-    };
-
-    envs.forEach(function(item, index) {
-      var cliArgs = self.getChildProcessArgs(mainModule);
-      cliArgs.push('-e', item, '__parallel-mode');
-      var env = process.env;
-      setTimeout(function() {
-        env.__NIGHTWATCH_PARALLEL_MODE = 1;
-        env.__NIGHTWATCH_ENV = item;
-
-        child = execFile(process.execPath, cliArgs, {
-          cwd : process.cwd(),
-          encoding: 'utf8',
-          env : env
-        }, function (error, stdout, stderr) {});
-
-        console.log('Started child process for env:',
-          Logger.colors.yellow(' ' + item + ' ', Logger.colors.background.black), '\n');
-
-        child.stdout.on('data', function (data) {
-          writeToSdtout(data, item, index);
-        });
-
-        child.stderr.on('data', function (data) {
-          writeToSdtout(data, item, index);
-        });
-
-        child.on('close', function (code) {
-          if (!self.settings.live_output) {
-            var child_output = output[item];
-            for (var i = 0; i < child_output.length; i++) {
-              process.stdout.write(child_output[i]);
-            }
-            console.log('');
-          }
-
-          if (index === (envs.length - 1)) {
-            finishCallback(output);
-          }
-        });
-      }, index * 10);
     });
   }
 };
