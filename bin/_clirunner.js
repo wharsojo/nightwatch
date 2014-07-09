@@ -12,6 +12,8 @@ function CliRunner(argv) {
   this.test_settings = null;
   this.output_folder = '';
   this.parallelMode = false;
+  this.childProcesses = null;
+
   this.cli = require('./_cli.js');
   this.availColors = [
     ['red', 'light_gray'], ['green', 'black'], ['blue', 'light_gray'], ['magenta', 'light_gray']
@@ -459,6 +461,7 @@ CliRunner.prototype = {
     finishCallback = finishCallback || function() {};
 
     this.shuffleChildProcessColors();
+    this.childProcesses = [];
 
     envs.forEach(function(item, index) {
       var cliArgs = self.getChildProcessArgs(mainModule);
@@ -528,6 +531,7 @@ CliRunner.prototype = {
 
     console.log('Started child process for env:',
       Logger.colors.yellow(' ' + item + ' ', Logger.colors.background.black), '\n');
+    this.childProcesses.push(child.pid);
 
     child.stdout.on('data', function (data) {
       self.writeToStdout(data, item, index);
